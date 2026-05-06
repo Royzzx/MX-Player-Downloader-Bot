@@ -301,10 +301,8 @@ async def remove_folder(folder_path):
 
 async def mx_player_request_api(url):
     """
-    Directly extracts MX Player stream links using their native API,
-    replacing the third-party API dependency.
+    Directly extracts MX Player stream links using their native API with Indian Proxy.
     """
-    # 1. Regex to extract type and ID from the URL
     TITLE_RE = r"^(?:https?://(?:www\.)?mxplayer\.in/(?P<type>movie|show)/.*?-)?(?P<id>[a-f0-9]+)(?:\?.*)?$"
     match = re.match(TITLE_RE, url)
     
@@ -314,7 +312,6 @@ async def mx_player_request_api(url):
     content_type = match.group("type")
     content_id = match.group("id")
     
-    # 2. Build the API URL parameters
     api_type = "episode" if content_type == "show" else "movie"
     api_base = "https://api.mxplayer.in/v1/web"
     params = "&platform=com.mxplay.desktop&device-density=2&kids-mode-enabled=false&content-languages=hi,en,ta,te,bn,ml,kn,mr,pa,gu,bho"
@@ -327,10 +324,12 @@ async def mx_player_request_api(url):
         "Referer": "https://www.mxplayer.in/"
     }
 
-    # 3. Fetch data asynchronously
+    # 🟢 INDIAN PROXY - Replace this IP if it stops working 🟢
+    proxy_url = "http://4.213.167.178:80"
+
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(api_url, timeout=15) as response:
+            async with session.get(api_url, proxy=proxy_url, timeout=15) as response:
                 if response.status != 200:
                     return {"status": False, "message": f"HTTP Error {response.status} from MX API."}
                 
@@ -343,11 +342,9 @@ async def mx_player_request_api(url):
                 if not stream:
                     return {"status": False, "message": "No stream data found for this video."}
                 
-                # 4. DRM Check - Important for yt-dlp bots
                 if stream.get("drmProtect", False):
                     return {"status": False, "message": "This video is DRM Protected (Widevine) and cannot be downloaded by this bot."}
 
-                # 5. Extract DASH or HLS manifests
                 dash = stream.get("dash", {})
                 hls = stream.get("hls", {})
                 provider = stream.get("provider", "")
@@ -368,23 +365,19 @@ async def mx_player_request_api(url):
                 if not stream_path:
                     return {"status": False, "message": "No valid stream (DASH/HLS) found."}
                     
-                # 6. Construct Final Stream URL
                 cdn_base = "https://d3sgzbosmwirao.cloudfront.net/"
                 if stream_path.startswith("http"):
                     final_url = stream_path
                 else:
                     final_url = f"{cdn_base}{stream_path}"
                 
-                # Extract Thumbnail (MX Player usually uses imageInfo array)
                 thumbnail_url = ""
                 image_info = data.get("imageInfo", [])
                 if image_info and isinstance(image_info, list) and len(image_info) > 0:
                     thumb_path = image_info[0].get("url", "")
                     if thumb_path:
-                        # Sometimes image paths are relative, MX uses this CDN for images
                         thumbnail_url = thumb_path if thumb_path.startswith("http") else f"https://qqcdnpictest.mxplay.com/{thumb_path}"
 
-                # 7. Return data formatted for the bot's handler
                 return {
                     "status": True,
                     "show_title": data.get("title", "Unknown Title"),
@@ -501,8 +494,12 @@ async def start_download(client, query, saved):
     safe_title = "".join(x for x in title if x not in '\\/:*?"<>|').strip()
     output = os.path.join(folder, f"{safe_title}.%(ext)s")
 
+    # 🟢 INDIAN PROXY - Replace this IP if it stops working 🟢
+    proxy_url = "http://4.213.167.178:80"
+
     cmd = [
         "yt-dlp",
+        "--proxy", proxy_url, # yt-dlp needs proxy to bypass region locks
         "-f", fmt,
         "-o", output,
         "--newline",
