@@ -6,7 +6,6 @@ import string
 import math
 import glob
 import shutil
-import requests
 import asyncio
 import yt_dlp
 import aiohttp
@@ -26,7 +25,7 @@ DKBOTZBOT = DKBOTZ(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=999,
+    workers=100, # Lowered from 999 for better stability on free tier hosting
 )
 
 ### All Message Start And Button
@@ -301,16 +300,102 @@ async def remove_folder(folder_path):
         return False
 
 async def mx_player_request_api(url):
-    api_url = f"https://ott.dkbotzpro.in/mxplayer?url={url}"
-    for _ in range(3):
-        try:
-            response = requests.get(api_url, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-        except:
-            pass
-        await asyncio.sleep(1)
-    return False
+    """
+    Directly extracts MX Player stream links using their native API,
+    replacing the third-party API dependency.
+    """
+    # 1. Regex to extract type and ID from the URL
+    TITLE_RE = r"^(?:https?://(?:www\.)?mxplayer\.in/(?P<type>movie|show)/.*?-)?(?P<id>[a-f0-9]+)(?:\?.*)?$"
+    match = re.match(TITLE_RE, url)
+    
+    if not match:
+        return {"status": False, "message": "Invalid MX Player URL format."}
+        
+    content_type = match.group("type")
+    content_id = match.group("id")
+    
+    # 2. Build the API URL parameters
+    api_type = "episode" if content_type == "show" else "movie"
+    api_base = "https://api.mxplayer.in/v1/web"
+    params = "&platform=com.mxplay.desktop&device-density=2&kids-mode-enabled=false&content-languages=hi,en,ta,te,bn,ml,kn,mr,pa,gu,bho"
+    
+    api_url = f"{api_base}/detail/video?type={api_type}&id={content_id}{params}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://www.mxplayer.in",
+        "Referer": "https://www.mxplayer.in/"
+    }
+
+    # 3. Fetch data asynchronously
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(api_url, timeout=15) as response:
+                if response.status != 200:
+                    return {"status": False, "message": f"HTTP Error {response.status} from MX API."}
+                
+                data = await response.json()
+                
+                if "title" not in data:
+                    return {"status": False, "message": "API response does not contain valid title data."}
+                    
+                stream = data.get("stream", {})
+                if not stream:
+                    return {"status": False, "message": "No stream data found for this video."}
+                
+                # 4. DRM Check - Important for yt-dlp bots
+                if stream.get("drmProtect", False):
+                    return {"status": False, "message": "This video is DRM Protected (Widevine) and cannot be downloaded by this bot."}
+
+                # 5. Extract DASH or HLS manifests
+                dash = stream.get("dash", {})
+                hls = stream.get("hls", {})
+                provider = stream.get("provider", "")
+                
+                stream_path = None
+                
+                if provider == "thirdParty":
+                    stream_path = stream.get("thirdParty", {}).get("webHlsUrl") or stream.get("hlsUrl")
+                else:
+                    provider_data = stream.get(provider, {})
+                    dash_provider = provider_data.get("dash", dash)
+                    stream_path = dash_provider.get("high") or dash_provider.get("base") or dash_provider.get("main")
+                    
+                    if not stream_path:
+                        hls_provider = provider_data.get("hls", hls)
+                        stream_path = hls_provider.get("high") or hls_provider.get("base") or hls_provider.get("main")
+                        
+                if not stream_path:
+                    return {"status": False, "message": "No valid stream (DASH/HLS) found."}
+                    
+                # 6. Construct Final Stream URL
+                cdn_base = "https://d3sgzbosmwirao.cloudfront.net/"
+                if stream_path.startswith("http"):
+                    final_url = stream_path
+                else:
+                    final_url = f"{cdn_base}{stream_path}"
+                
+                # Extract Thumbnail (MX Player usually uses imageInfo array)
+                thumbnail_url = ""
+                image_info = data.get("imageInfo", [])
+                if image_info and isinstance(image_info, list) and len(image_info) > 0:
+                    thumb_path = image_info[0].get("url", "")
+                    if thumb_path:
+                        # Sometimes image paths are relative, MX uses this CDN for images
+                        thumbnail_url = thumb_path if thumb_path.startswith("http") else f"https://qqcdnpictest.mxplay.com/{thumb_path}"
+
+                # 7. Return data formatted for the bot's handler
+                return {
+                    "status": True,
+                    "show_title": data.get("title", "Unknown Title"),
+                    "description": data.get("description", ""),
+                    "thumbnail": thumbnail_url, 
+                    "m3u8_url": final_url if "m3u8" in final_url or "hls" in final_url else "",
+                    "mpd_url": final_url if "mpd" in final_url or "dash" in final_url else ""
+                }
+
+    except Exception as e:
+        return {"status": False, "message": f"Extraction Error: {str(e)}"}
 
 def full_title_builder(dkbotz_mx_data):
     title = dkbotz_mx_data.get("show_title", "Unknown")
@@ -765,7 +850,5 @@ async def dkbotz_handle_link(client, message):
         await message.reply_text(text, reply_markup=InlineKeyboardMarkup(btn))
 
     await checking.delete()
-
-
 
 DKBOTZBOT.run()
